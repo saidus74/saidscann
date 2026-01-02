@@ -1,44 +1,81 @@
 import socket
+import ipaddress
+import subprocess
+import platform
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
-def host_kontrol(ip, port, timeout=1):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-
-    try:
-        s.connect((ip, port))
-        s.close()
-        return True
-    except:
-        return False
+CHECK_PORTS = [22, 80, 443, 8080]
+TIMEOUT = 0.4
+scan_results = []
+mutex = Lock()
 
 
-def main():
-    print("=== Network Host Tespit Aracı (Socket) ===\n")
+def show_title():
+    print("\n--- Network Host & Port Kontrol Aracı ---\n")
 
-    ip_base = input("IP bloğunu gir (örn: 192.168.1): ")
-    baslangic = int(input("Başlangıç host numarası: "))
-    bitis = int(input("Bitiş host numarası: "))
-    port = int(input("Kontrol edilecek port (örn: 80): "))
 
-    print("\nTarama başlıyor...\n")
+def host_alive(ip):
+    system = platform.system()
 
-    aktif_hostlar = []
-
-    for i in range(baslangic, bitis + 1):
-        ip = f"{ip_base}.{i}"
-        if host_kontrol(ip, port):
-            print(f"[+] {ip} erişilebilir")
-            aktif_hostlar.append(ip)
-        else:
-            print(f"[-] {ip} erişilemiyor")
-
-    print("\n=== Tarama Sonucu ===")
-    if aktif_hostlar:
-        for host in aktif_hostlar:
-            print(f"✔ {host}")
+    if system == "Windows":
+        cmd = ["ping", "-n", "1", "-w", "800", ip]
     else:
-        print("Aktif host bulunamadı")
+        cmd = ["ping", "-c", "1", "-W", "1", ip]
+
+    return subprocess.call(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    ) == 0
+
+
+def check_ports(ip):
+    found = []
+
+    for p in CHECK_PORTS:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(TIMEOUT)
+                if sock.connect_ex((ip, p)) == 0:
+                    found.append(p)
+        except:
+            continue
+
+    return found
+
+
+def analyze_ip(ip):
+    ip = str(ip)
+
+    if host_alive(ip):
+        ports = check_ports(ip)
+        ports_str = " ".join(map(str, ports)) if ports else "YOK"
+        with mutex:
+            scan_results.append([ip, "AKTİF", ports_str])
+    else:
+        with mutex:
+            scan_results.append([ip, "ERİŞİLEMEDİ", "-"])
+
+
+def scan_subnet(subnet):
+    net = ipaddress.ip_network(subnet, strict=False)
+
+    with ThreadPoolExecutor(max_workers=40) as pool:
+        for host in net.hosts():
+            pool.submit(analyze_ip, host)
+
+
+def show_results():
+    print("{:<16} {:<12} {:<20}".format("IP", "DURUM", "PORTLAR"))
+    print("-" * 48)
+
+    for row in sorted(scan_results):
+        print("{:<16} {:<12} {:<20}".format(row[0], row[1], row[2]))
 
 
 if __name__ == "__main__":
-    main()
+    show_title()
+    target_net = input("Taranacak ağ (örn: 10.10.10.0/24): ")
+    scan_subnet(target_net)
+    show_results()
